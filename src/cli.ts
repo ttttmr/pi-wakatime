@@ -9,6 +9,31 @@ import AdmZip from 'adm-zip';
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/wakatime/wakatime-cli/releases/latest';
 const GITHUB_DOWNLOAD_URL = 'https://github.com/wakatime/wakatime-cli/releases/latest/download';
 
+// Minimum version required to support the "ai coding" category (added in v1.118.0).
+// Any binary older than this will be replaced with the latest download.
+const MIN_VERSION = [1, 118, 0];
+
+/**
+ * Parse a wakatime-cli version string like "v1.118.0" into [major, minor, patch].
+ * Returns null if the string cannot be parsed.
+ */
+function parseVersion(raw: string): [number, number, number] | null {
+  const match = raw.trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)];
+}
+
+/**
+ * Returns true if `version` satisfies the minimum version requirement.
+ */
+function meetsMinimum(version: [number, number, number]): boolean {
+  for (let i = 0; i < 3; i++) {
+    if (version[i] > MIN_VERSION[i]) return true;
+    if (version[i] < MIN_VERSION[i]) return false;
+  }
+  return true; // equal
+}
+
 export class WakaTimeCli {
   private cliLocation: string | undefined;
   private installDir: string;
@@ -60,15 +85,46 @@ export class WakaTimeCli {
     return standardPath;
   }
 
+  /**
+   * Returns the version string reported by the binary at `location`,
+   * or null if it cannot be determined.
+   */
+  private getInstalledVersion(location: string): string | null {
+    try {
+      return child_process.execSync(`"${location}" --version`, { timeout: 5000 }).toString().trim();
+    } catch (e) {
+      return null;
+    }
+  }
+
   public async checkAndInstall(): Promise<string> {
     const location = this.getLocation();
-    if (fs.existsSync(location)) {
-      return location;
+
+    if (!fs.existsSync(location)) {
+      console.log('[WakaTime] Installing wakatime-cli...');
+      await this.install();
+      return this.getLocation();
     }
 
-    console.log('[WakaTime] Installing wakatime-cli...');
-    await this.install();
-    return this.getLocation();
+    // Binary exists — check its version meets the minimum requirement.
+    const raw = this.getInstalledVersion(location);
+    const version = raw ? parseVersion(raw) : null;
+
+    if (!version) {
+      console.log(`[WakaTime] Could not determine version of ${location}, re-installing...`);
+      await this.install();
+      return this.getLocation();
+    }
+
+    if (!meetsMinimum(version)) {
+      console.log(
+        `[WakaTime] wakatime-cli ${raw} is below minimum required v${MIN_VERSION.join('.')} — updating...`
+      );
+      await this.install();
+      return this.getLocation();
+    }
+
+    return location;
   }
 
   private async install(): Promise<void> {
@@ -100,7 +156,8 @@ export class WakaTimeCli {
         fs.chmodSync(targetPath, 0o755);
     }
     
-    this.cliLocation = targetPath;
+    // Clear cached location so getLocation() re-evaluates after install
+    this.cliLocation = undefined;
     console.log(`[WakaTime] Installed to ${targetPath}`);
   }
 
