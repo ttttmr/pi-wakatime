@@ -78,10 +78,7 @@ export class HeartbeatSender {
       args.push('--write');
     }
 
-    if (params.lineChanges !== undefined) {
-      args.push('--category', 'ai coding');
-      args.push('--ai-line-changes', params.lineChanges.toString());
-    }
+    // Note: --ai-line-changes is not supported by wakatime-cli; category is already set above.
 
     // Run in background, don't await
     child_process.execFile(cliPath, args, (error, stdout, stderr) => {
