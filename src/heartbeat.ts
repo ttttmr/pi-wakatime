@@ -1,95 +1,205 @@
-import * as child_process from 'node:child_process';
-import * as path from 'node:path';
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import { WakaTimeCli } from './cli';
+import childProcess from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import type { Dependencies } from './dependencies';
+import { logger } from './logger';
+import type { HeartbeatRequest, HeartbeatState } from './types';
+import { estimateEditLineChanges } from './utils';
 
-const LOG_FILE = path.join(os.homedir(), '.wakatime', 'pi-wakatime.log');
+const DEFAULT_STATE_DIR = path.join(os.homedir(), '.wakatime', 'pi-wakatime-state');
+export const SESSION_HEARTBEAT_INTERVAL_MS = 60_000;
 
-function log(message: string) {
-  const time = new Date().toISOString();
-  try {
-    fs.appendFileSync(LOG_FILE, `[${time}] ${message}\n`);
-  } catch (e) {
-    // ignore logging errors
+export function getStateFilePath(stateKey: string, fallbackStateDir: string = DEFAULT_STATE_DIR): string {
+  if (path.isAbsolute(stateKey) || stateKey.includes(path.sep)) {
+    return `${stateKey}.wakatime`;
   }
+
+  return path.join(fallbackStateDir, `${encodeURIComponent(stateKey)}.json`);
 }
 
-export class HeartbeatSender {
-  private cli: WakaTimeCli;
-  private lastHeartbeat: number = 0;
-  private lastFile: string = "";
-  private DEBOUNCE_TIME = 2000; // 2 seconds
+type ExecFileCallback = (error: childProcess.ExecFileException | null, stdout: string, stderr: string) => void;
+type ExecFileFn = (file: string, args: readonly string[], callback: ExecFileCallback) => void;
 
-  constructor() {
-    this.cli = new WakaTimeCli();
+type HeartbeatTrackerOptions = {
+  dependencies: Pick<Dependencies, 'getCliLocation' | 'checkAndInstallCli'>;
+  plugin: string;
+  execFile?: ExecFileFn;
+  now?: () => number;
+  stateFile?: string;
+};
+
+type QueuedHeartbeat = {
+  cliPath: string;
+  args: string[];
+  request: HeartbeatRequest;
+};
+
+export function shouldTrackTool(toolName: string): boolean {
+  return toolName === 'read' || toolName === 'write' || toolName === 'edit';
+}
+
+export function shouldSendSessionHeartbeat(
+  now: number,
+  lastHeartbeatAt?: number,
+  intervalMs: number = SESSION_HEARTBEAT_INTERVAL_MS,
+): boolean {
+  if (typeof lastHeartbeatAt !== 'number' || Number.isNaN(lastHeartbeatAt)) {
+    return true;
   }
 
-  public async init() {
-    try {
-      const location = await this.cli.checkAndInstall();
-      log(`CLI ready: ${location}`);
-    } catch (e: any) {
-      log(`ERROR: CLI init failed - ${e.message}`);
-      throw e;
-    }
+  return now - lastHeartbeatAt >= intervalMs;
+}
+
+export { estimateEditLineChanges };
+
+export function buildHeartbeatArgs(input: {
+  cliPath: string;
+  plugin: string;
+  request: HeartbeatRequest;
+}): string[] {
+  const { plugin, request } = input;
+  const args = ['--entity', request.entity, '--entity-type', 'file', '--plugin', plugin];
+
+  if (request.projectFolder) {
+    args.push('--project-folder', request.projectFolder);
   }
 
-  public send(
-    file: string,
-    params: {
-      isWrite?: boolean;
-      lineChanges?: number;
-      projectRoot?: string;
-      category?: string;
-    }
-  ) {
-    const now = Date.now();
-    
-    // Special handling for .pi-session: always send to track active time
-    const isSessionFile = file.endsWith('.pi-session');
-    
-    // Only debounce if it's the same file, NOT a write operation, and NOT .pi-session
-    if (!params.isWrite && !isSessionFile && file === this.lastFile && now - this.lastHeartbeat < this.DEBOUNCE_TIME) {
-        return;  // Silent debounce
+  if (request.type === 'file' && request.isWrite) {
+    args.push('--write');
+  }
+
+  if (request.type === 'file' && typeof request.lineChanges === 'number') {
+    args.push('--category', 'ai coding', '--ai-line-changes', String(request.lineChanges));
+    return args;
+  }
+
+  args.push('--category', request.category || 'coding');
+  return args;
+}
+
+export class HeartbeatTracker {
+  private dependencies: Pick<Dependencies, 'getCliLocation' | 'checkAndInstallCli'>;
+  private plugin: string;
+  private execFile: ExecFileFn;
+  private now: () => number;
+  private fallbackStateDir: string;
+  private queue: QueuedHeartbeat[] = [];
+  private processing = false;
+  private sessionHeartbeatsInFlight = new Set<string>();
+
+  constructor(options: HeartbeatTrackerOptions) {
+    this.dependencies = options.dependencies;
+    this.plugin = options.plugin;
+    this.execFile = options.execFile || ((file, args, callback) => childProcess.execFile(file, args, callback));
+    this.now = options.now || (() => Date.now());
+    this.fallbackStateDir = options.stateFile || DEFAULT_STATE_DIR;
+  }
+
+  public async init(): Promise<string> {
+    const location = await this.dependencies.checkAndInstallCli();
+    logger.debug(`wakatime-cli ready at ${location}`);
+    return location;
+  }
+
+  public track(request: HeartbeatRequest): void {
+    if (request.type === 'session') {
+      const lastHeartbeatAt = this.readState(this.getSessionStateFile(request.stateKey)).lastHeartbeatAt;
+      if (!shouldSendSessionHeartbeat(this.now(), lastHeartbeatAt)) {
+        return;
+      }
+      if (this.sessionHeartbeatsInFlight.has(request.stateKey)) {
+        return;
+      }
+      this.sessionHeartbeatsInFlight.add(request.stateKey);
     }
 
-    const cliPath = this.cli.getLocation();
+    const cliPath = this.dependencies.getCliLocation();
     if (!cliPath) {
-      log('Error: CLI path not found when attempting to send heartbeat');
+      if (request.type === 'session') {
+        this.sessionHeartbeatsInFlight.delete(request.stateKey);
+      }
+      logger.warn('Skipping heartbeat because wakatime-cli is not available yet.');
       return;
     }
 
-    this.lastHeartbeat = now;
-    this.lastFile = file;
-
-    const args = [
-      '--entity', file,
-      '--entity-type', 'file',
-      '--category', params.category || 'coding',
-      '--plugin', 'pi-coding-agent/1.0.0 pi-wakatime/1.0.0',
-    ];
-
-    if (params.projectRoot) {
-      args.push('--project-folder', params.projectRoot);
-    }
-
-    if (params.isWrite) {
-      args.push('--write');
-    }
-
-    if (params.lineChanges !== undefined) {
-      args.push('--category', 'ai coding');
-      args.push('--ai-line-changes', params.lineChanges.toString());
-    }
-
-    // Run in background, don't await
-    child_process.execFile(cliPath, args, (error, stdout, stderr) => {
-      if (error) {
-        log(`ERROR: ${path.basename(file)} - ${stderr || error.message}`);
-        console.error('[WakaTime] Error sending heartbeat:', stderr || error.message);
-      }
-      // Success is silent
+    this.queue.push({
+      cliPath,
+      args: buildHeartbeatArgs({ cliPath, plugin: this.plugin, request }),
+      request,
     });
+
+    void this.processQueue();
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
+
+    try {
+      while (this.queue.length > 0) {
+        const next = this.queue.shift();
+        if (!next) continue;
+        await this.execute(next);
+      }
+    } finally {
+      this.processing = false;
+    }
+  }
+
+  private async execute(heartbeat: QueuedHeartbeat): Promise<void> {
+    await new Promise<void>((resolve) => {
+      this.execFile(heartbeat.cliPath, heartbeat.args, (error, stdout, stderr) => {
+        if (heartbeat.request.type === 'session') {
+          this.sessionHeartbeatsInFlight.delete(heartbeat.request.stateKey);
+        }
+
+        if (error) {
+          logger.warn(`Heartbeat failed for ${path.basename(heartbeat.request.entity)}: ${stderr || error.message}`);
+          resolve();
+          return;
+        }
+
+        if (stdout.trim()) {
+          logger.debug(stdout.trim());
+        }
+        if (stderr.trim()) {
+          logger.warn(stderr.trim());
+        }
+
+        if (heartbeat.request.type === 'session') {
+          this.updateSessionHeartbeatState(heartbeat.request.stateKey, this.now());
+        }
+
+        resolve();
+      });
+    });
+  }
+
+  private getSessionStateFile(sessionKey: string): string {
+    return getStateFilePath(sessionKey, this.fallbackStateDir);
+  }
+
+  private readState(stateFile: string): HeartbeatState {
+    try {
+      if (!fs.existsSync(stateFile)) return {};
+      return JSON.parse(fs.readFileSync(stateFile, 'utf-8')) as HeartbeatState;
+    } catch {
+      return {};
+    }
+  }
+
+  private updateSessionHeartbeatState(sessionKey: string, timestamp: number): void {
+    const stateFile = this.getSessionStateFile(sessionKey);
+
+    try {
+      const next: HeartbeatState = {
+        lastHeartbeatAt: timestamp,
+      };
+      fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+      fs.writeFileSync(stateFile, JSON.stringify(next, null, 2));
+    } catch (error) {
+      logger.warn(`Unable to persist heartbeat state: ${String(error)}`);
+    }
   }
 }

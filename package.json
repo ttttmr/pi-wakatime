@@ -1,16 +1,15 @@
 {
   "name": "pi-wakatime",
-  "version": "1.0.0",
-  "description": "WakaTime extension for pi coding agent - track AI coding activity and metrics",
+  "version": "1.1.0",
+  "description": "WakaTime plugin for Pi Coding Agent",
   "main": "src/index.ts",
   "files": [
     "src/",
     "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
+    "LICENSE"
   ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "keywords": [
     "pi-package",
@@ -20,7 +19,8 @@
     "ai",
     "metrics",
     "time-tracking",
-    "productivity"
+    "productivity",
+    "plugin"
   ],
   "author": "ttttmr",
   "license": "MIT",
@@ -38,7 +38,13 @@
   "dependencies": {
     "adm-zip": "^0.5.10"
   },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.68.1",
+    "tsx": "^4.21.0"
+  },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   }
 }

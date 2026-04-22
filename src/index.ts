@@ -1,105 +1,150 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { HeartbeatSender } from "./heartbeat";
-import * as path from "node:path";
-import * as fs from "node:fs";
-import * as os from "node:os";
+import type { ExtensionAPI, ExtensionContext } from '@mariozechner/pi-coding-agent';
+import path from 'node:path';
+import { Dependencies } from './dependencies';
+import {
+  HeartbeatTracker,
+  shouldTrackTool,
+  estimateEditLineChanges,
+} from './heartbeat';
+import { logger, LogLevel } from './logger';
+import { Options } from './options';
+import type { ClaudeLikeHookEvent, HeartbeatRequest } from './types';
+import { estimateWriteLineChanges, getPackageVersion } from './utils';
+import { VERSION } from './version';
 
-const LOG_FILE = path.join(os.homedir(), '.wakatime', 'pi-wakatime.log');
-const MAX_LOG_LINES = 5000;
-
-function log(message: string) {
-  const time = new Date().toISOString();
-  try {
-    fs.appendFileSync(LOG_FILE, `[${time}] [index] ${message}\n`);
-  } catch (e) {}
+function buildPluginString(): string {
+  const piVersion = getPackageVersion('@mariozechner/pi-coding-agent');
+  return `pi-coding-agent/${piVersion} pi-wakatime/${VERSION}`;
 }
 
-function rotateLog() {
-  try {
-    if (!fs.existsSync(LOG_FILE)) return;
-    
-    const stats = fs.statSync(LOG_FILE);
-    // Only rotate if file is larger than 500KB
-    if (stats.size < 500 * 1024) return;
-    
-    const content = fs.readFileSync(LOG_FILE, 'utf-8');
-    const lines = content.split('\n');
-    
-    if (lines.length > MAX_LOG_LINES) {
-      const kept = lines.slice(-MAX_LOG_LINES).join('\n');
-      fs.writeFileSync(LOG_FILE, kept);
-    }
-  } catch (e) {}
+
+function buildSessionHeartbeat(
+  ctx: ExtensionContext,
+  sourceEvent: ClaudeLikeHookEvent,
+): HeartbeatRequest {
+  return {
+    type: 'session',
+    entity: path.join(ctx.cwd, '.pi-session'),
+    projectFolder: ctx.cwd,
+    category: 'coding',
+    stateKey: ctx.sessionManager.getSessionId(),
+    sourceEvent,
+  };
+}
+
+function buildFileHeartbeat(
+  toolName: string,
+  input: Record<string, unknown>,
+  ctx: { cwd: string },
+): HeartbeatRequest | undefined {
+  const rawPath = typeof input.path === 'string' ? input.path : undefined;
+  if (!rawPath) return undefined;
+
+  const entity = path.resolve(ctx.cwd, rawPath);
+
+  if (toolName === 'read') {
+    return {
+      type: 'file',
+      entity,
+      projectFolder: ctx.cwd,
+      category: 'coding',
+      sourceEvent: 'PostToolUse',
+    };
+  }
+
+  if (toolName === 'write') {
+    return {
+      type: 'file',
+      entity,
+      projectFolder: ctx.cwd,
+      category: 'coding',
+      isWrite: true,
+      lineChanges: estimateWriteLineChanges(typeof input.content === 'string' ? input.content : ''),
+      sourceEvent: 'PostToolUse',
+    };
+  }
+
+  if (toolName === 'edit') {
+    const edits = Array.isArray(input.edits)
+      ? input.edits.filter((edit): edit is { oldText?: string; newText?: string } => typeof edit === 'object' && edit !== null)
+      : [];
+
+    return {
+      type: 'file',
+      entity,
+      projectFolder: ctx.cwd,
+      category: 'coding',
+      isWrite: true,
+      lineChanges: estimateEditLineChanges(edits),
+      sourceEvent: 'PostToolUse',
+    };
+  }
+
+  return undefined;
 }
 
 export default function (pi: ExtensionAPI) {
-  rotateLog();
-  const sender = new HeartbeatSender();
-  let initialized = false;
+  const options = new Options();
+  logger.setLevel(options.getSetting('settings', 'debug') === 'true' ? LogLevel.DEBUG : LogLevel.INFO);
 
-  // Initialize CLI on session start or first activity
-  const initPromise = sender.init().then(() => {
-    initialized = true;
-  }).catch(err => {
-    log(`Failed to initialize: ${err}`);
+  const dependencies = new Dependencies(options, logger);
+  const tracker = new HeartbeatTracker({
+    dependencies,
+    plugin: buildPluginString(),
   });
 
-  pi.on("tool_result", async (event, ctx) => {
-    if (event.isError) return;
-    if (!initialized) await initPromise;
+  const initPromise = tracker.init().catch((error) => {
+    logger.errorException(error);
+    throw error;
+  });
 
-    // We only care about file operations
-    if (!["read", "write", "edit"].includes(event.toolName)) return;
+  const ensureInitialized = async (): Promise<boolean> => {
+    try {
+      await initPromise;
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
-    // Use "any" cast for input as specific tool types are not strictly imported here
-    // but we know the shape from the standard tools.
-    const input = event.input as any;
-    if (!input.path) return;
+  const trackSessionEvent = async (
+    hookEvent: ClaudeLikeHookEvent,
+    ctx: ExtensionContext,
+  ) => {
+    if (!(await ensureInitialized())) return;
+    tracker.track(buildSessionHeartbeat(ctx, hookEvent));
+  };
 
-    const filePath = path.resolve(ctx.cwd, input.path);
-    const projectRoot = ctx.cwd;
+  pi.on('turn_start', async (_event, ctx) => {
+    await trackSessionEvent('UserPromptSubmit', ctx);
+  });
 
-    if (event.toolName === "read") {
-      sender.send(filePath, {
-        projectRoot,
-        isWrite: false,
-        category: "ai coding" // Reading is coding context
-      });
-    } else if (event.toolName === "write") {
-      const lineCount = (input.content || "").split('\n').length;
-      sender.send(filePath, {
-        projectRoot,
-        isWrite: true,
-        lineChanges: lineCount,
-        category: "ai coding"
-      });
-    } else if (event.toolName === "edit") {
-      const newText = input.newText || "";
-      const oldText = input.oldText || "";
-      const newLines = newText.split('\n').length;
-      const oldLines = oldText.split('\n').length;
-      const lineChanges = newLines - oldLines;
-      
-      sender.send(filePath, {
-        projectRoot,
-        isWrite: true,
-        lineChanges: Math.abs(lineChanges), // WakaTime expects positive number
-        category: "ai coding"
-      });
+  pi.on('tool_call', async (_event, ctx) => {
+    await trackSessionEvent('PreToolUse', ctx);
+  });
+
+  pi.on('tool_result', async (event, ctx) => {
+    if (!(await ensureInitialized())) return;
+
+    tracker.track(buildSessionHeartbeat(ctx, 'PostToolUse'));
+
+    if (event.isError || !shouldTrackTool(event.toolName)) {
+      return;
+    }
+
+    const request = buildFileHeartbeat(event.toolName, event.input as Record<string, unknown>, ctx);
+    if (request) {
+      tracker.track(request);
     }
   });
 
-  // Track general interaction on every turn
-  pi.on("turn_start", async (event, ctx) => {
-    if (!initialized) await initPromise;
-    
-    // We attribute this to a generic activity file in the project
-    // This ensures time is tracked even if no file tools are used (e.g. Q&A)
-    const projectFile = path.join(ctx.cwd, ".pi-session");
-    
-    sender.send(projectFile, {
-      projectRoot: ctx.cwd,
-      category: "ai coding" 
-    });
+  pi.on('session_before_compact', async (_event, ctx) => {
+    await trackSessionEvent('PreCompact', ctx);
   });
+
+  pi.on('session_shutdown', async (_event, ctx) => {
+    await trackSessionEvent('SessionEnd', ctx);
+  });
+
+  logger.debug(`Loaded pi-wakatime/${VERSION} with plugin ${buildPluginString()}`);
 }
