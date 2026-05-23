@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from '@mariozechner/pi-coding-agent';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { Dependencies } from './dependencies';
 import {
@@ -13,8 +13,9 @@ import { estimateWriteLineChanges, getPackageVersion } from './utils';
 import { VERSION } from './version';
 
 function buildPluginString(): string {
-  const piVersion = getPackageVersion('@mariozechner/pi-coding-agent');
-  return `pi-coding-agent/${piVersion} pi-wakatime/${VERSION}`;
+  const piVersion = getPackageVersion('@earendil-works/pi-coding-agent');
+  const legacyPiVersion = piVersion === 'unknown' ? getPackageVersion('@mariozechner/pi-coding-agent') : piVersion;
+  return `pi-coding-agent/${legacyPiVersion} pi-wakatime/${VERSION}`;
 }
 
 

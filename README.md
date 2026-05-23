@@ -95,4 +95,4 @@ If `wakatime-cli` download fails:
 ## Credits
 
 - Inspired by [wakatime/claude-code-wakatime](https://github.com/wakatime/claude-code-wakatime)
-- Built for [Pi Coding Agent](https://github.com/badlogic/pi-mono)
+- Built for [Pi Coding Agent](https://github.com/earendil-works/pi-mono)

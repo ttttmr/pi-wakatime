@@ -5,10 +5,11 @@ import os from 'node:os';
 import type { Dependencies } from './dependencies';
 import { logger } from './logger';
 import type { HeartbeatRequest, HeartbeatState } from './types';
-import { estimateEditLineChanges } from './utils';
+import { buildExecOptions, estimateEditLineChanges } from './utils';
 
 const DEFAULT_STATE_DIR = path.join(os.homedir(), '.wakatime', 'pi-wakatime-state');
 export const SESSION_HEARTBEAT_INTERVAL_MS = 60_000;
+export const WAKATIME_CLI_TIMEOUT_MS = 30_000;
 
 export function getStateFilePath(stateKey: string, fallbackStateDir: string = DEFAULT_STATE_DIR): string {
   if (path.isAbsolute(stateKey) || stateKey.includes(path.sep)) {
@@ -19,7 +20,12 @@ export function getStateFilePath(stateKey: string, fallbackStateDir: string = DE
 }
 
 type ExecFileCallback = (error: childProcess.ExecFileException | null, stdout: string, stderr: string) => void;
-type ExecFileFn = (file: string, args: readonly string[], callback: ExecFileCallback) => void;
+type ExecFileFn = (
+  file: string,
+  args: readonly string[],
+  options: childProcess.ExecFileOptionsWithStringEncoding,
+  callback: ExecFileCallback,
+) => void;
 
 type HeartbeatTrackerOptions = {
   dependencies: Pick<Dependencies, 'getCliLocation' | 'checkAndInstallCli'>;
@@ -59,10 +65,19 @@ export function buildHeartbeatArgs(input: {
   request: HeartbeatRequest;
 }): string[] {
   const { plugin, request } = input;
-  const args = ['--entity', request.entity, '--entity-type', 'file', '--plugin', plugin];
+  const args = [
+    '--entity', request.entity,
+    '--entity-type', 'file',
+    '--plugin', plugin,
+    '--sync-ai-disabled',
+  ];
 
   if (request.projectFolder) {
     args.push('--project-folder', request.projectFolder);
+  }
+
+  if (request.type === 'session') {
+    args.push('--is-unsaved-entity');
   }
 
   if (request.type === 'file' && request.isWrite) {
@@ -91,7 +106,9 @@ export class HeartbeatTracker {
   constructor(options: HeartbeatTrackerOptions) {
     this.dependencies = options.dependencies;
     this.plugin = options.plugin;
-    this.execFile = options.execFile || ((file, args, callback) => childProcess.execFile(file, args, callback));
+    this.execFile = options.execFile || ((file, args, execOptions, callback) => {
+      childProcess.execFile(file, args, execOptions, callback);
+    });
     this.now = options.now || (() => Date.now());
     this.fallbackStateDir = options.stateFile || DEFAULT_STATE_DIR;
   }
@@ -149,30 +166,42 @@ export class HeartbeatTracker {
 
   private async execute(heartbeat: QueuedHeartbeat): Promise<void> {
     await new Promise<void>((resolve) => {
-      this.execFile(heartbeat.cliPath, heartbeat.args, (error, stdout, stderr) => {
-        if (heartbeat.request.type === 'session') {
-          this.sessionHeartbeatsInFlight.delete(heartbeat.request.stateKey);
-        }
+      const execOptions: childProcess.ExecFileOptionsWithStringEncoding = {
+        ...buildExecOptions(),
+        encoding: 'utf-8',
+        timeout: WAKATIME_CLI_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      };
 
-        if (error) {
-          logger.warn(`Heartbeat failed for ${path.basename(heartbeat.request.entity)}: ${stderr || error.message}`);
+      this.execFile(
+        heartbeat.cliPath,
+        heartbeat.args,
+        execOptions,
+        (error, stdout, stderr) => {
+          if (heartbeat.request.type === 'session') {
+            this.sessionHeartbeatsInFlight.delete(heartbeat.request.stateKey);
+          }
+
+          if (error) {
+            logger.warn(`Heartbeat failed for ${path.basename(heartbeat.request.entity)}: ${stderr || error.message}`);
+            resolve();
+            return;
+          }
+
+          if (stdout.trim()) {
+            logger.debug(stdout.trim());
+          }
+          if (stderr.trim()) {
+            logger.warn(stderr.trim());
+          }
+
+          if (heartbeat.request.type === 'session') {
+            this.updateSessionHeartbeatState(heartbeat.request.stateKey, this.now());
+          }
+
           resolve();
-          return;
-        }
-
-        if (stdout.trim()) {
-          logger.debug(stdout.trim());
-        }
-        if (stderr.trim()) {
-          logger.warn(stderr.trim());
-        }
-
-        if (heartbeat.request.type === 'session') {
-          this.updateSessionHeartbeatState(heartbeat.request.stateKey, this.now());
-        }
-
-        resolve();
-      });
+        },
+      );
     });
   }
 
