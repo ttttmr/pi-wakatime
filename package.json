@@ -36,7 +36,7 @@
     "node": ">=16.0.0"
   },
   "dependencies": {
-    "adm-zip": "^0.5.17"
+    "adm-zip": "^0.6.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.75.5",
