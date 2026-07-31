@@ -1,6 +1,6 @@
 {
   "name": "pi-wakatime",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "WakaTime plugin for Pi Coding Agent",
   "main": "src/index.ts",
   "files": [
