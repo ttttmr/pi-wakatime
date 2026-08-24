@@ -39,7 +39,7 @@
     "adm-zip": "^0.6.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
     "@types/adm-zip": "^0.5.8",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3"
