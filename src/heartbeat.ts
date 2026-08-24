@@ -1,17 +1,19 @@
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import type { Dependencies } from './dependencies';
 import { logger } from './logger';
 import type { HeartbeatRequest, HeartbeatState } from './types';
-import { buildExecOptions, estimateEditLineChanges } from './utils';
+import { buildExecOptions, estimateEditLineChanges, getHomeDirectory } from './utils';
 
-const DEFAULT_STATE_DIR = path.join(os.homedir(), '.wakatime', 'pi-wakatime-state');
 export const SESSION_HEARTBEAT_INTERVAL_MS = 60_000;
 export const WAKATIME_CLI_TIMEOUT_MS = 30_000;
 
-export function getStateFilePath(stateKey: string, fallbackStateDir: string = DEFAULT_STATE_DIR): string {
+function getDefaultStateDir(): string {
+  return path.join(getHomeDirectory(), '.wakatime', 'pi-wakatime-state');
+}
+
+export function getStateFilePath(stateKey: string, fallbackStateDir: string = getDefaultStateDir()): string {
   if (path.isAbsolute(stateKey) || stateKey.includes(path.sep)) {
     return `${stateKey}.wakatime`;
   }
@@ -110,7 +112,7 @@ export class HeartbeatTracker {
       childProcess.execFile(file, args, execOptions, callback);
     });
     this.now = options.now || (() => Date.now());
-    this.fallbackStateDir = options.stateFile || DEFAULT_STATE_DIR;
+    this.fallbackStateDir = options.stateFile || getDefaultStateDir();
   }
 
   public async init(): Promise<string> {

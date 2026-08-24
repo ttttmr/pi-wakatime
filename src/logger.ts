@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { getHomeDirectory } from './utils';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -9,7 +9,9 @@ export enum LogLevel {
   ERROR,
 }
 
-const LOG_FILE = path.join(os.homedir(), '.wakatime', 'pi-wakatime.log');
+function getLogFile(): string {
+  return path.join(getHomeDirectory(), '.wakatime', 'pi-wakatime.log');
+}
 
 export class Logger {
   private level: LogLevel = LogLevel.INFO;
@@ -25,8 +27,9 @@ export class Logger {
   public log(level: LogLevel, message: string): void {
     if (level < this.level) return;
 
-    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}][${LogLevel[level]}] ${message}\n`);
+    const logFile = getLogFile();
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}][${LogLevel[level]}] ${message}\n`);
   }
 
   public debug(message: string): void {

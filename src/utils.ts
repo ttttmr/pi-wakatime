@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import os from 'node:os';
 import childProcess, { StdioOptions } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -11,9 +10,9 @@ export function isWindows(): boolean {
 }
 
 export function getHomeDirectory(): string {
-  const configuredHome = process.env.WAKATIME_HOME;
-  if (configuredHome && configuredHome.trim() && fs.existsSync(configuredHome.trim())) {
-    return configuredHome.trim();
+  const configuredHome = process.env.WAKATIME_HOME?.trim();
+  if (configuredHome) {
+    return configuredHome;
   }
   return process.env[isWindows() ? 'USERPROFILE' : 'HOME'] || os.homedir() || process.cwd();
 }

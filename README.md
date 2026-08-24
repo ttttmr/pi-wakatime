@@ -33,11 +33,11 @@ Because Pi uses extension lifecycle events instead of Claude hook scripts, this 
 The plugin also:
 
 - finds a global `wakatime-cli` when available
-- installs a local `wakatime-cli` into `~/.wakatime/` when needed
+- installs a local `wakatime-cli` into `$WAKATIME_HOME/.wakatime/` when `WAKATIME_HOME` is set, otherwise `~/.wakatime/`
 - checks for updates to the local CLI periodically
 - respects WakaTime `proxy` and `no_ssl_verify` settings
-- stores throttle state in `~/.wakatime/pi-wakatime-state.json`
-- writes extension logs to `~/.wakatime/pi-wakatime.log`
+- stores throttle state in `$WAKATIME_HOME/.wakatime/pi-wakatime-state/` when `WAKATIME_HOME` is set, otherwise `~/.wakatime/pi-wakatime-state/`
+- writes extension logs to `$WAKATIME_HOME/.wakatime/pi-wakatime.log` when `WAKATIME_HOME` is set, otherwise `~/.wakatime/pi-wakatime.log`
 
 ## Usage
 
@@ -77,19 +77,21 @@ Then inspect logs:
 
 ```bash
 tail -f ~/.wakatime/pi-wakatime.log
+# or, when WAKATIME_HOME is set:
+tail -f "$WAKATIME_HOME/.wakatime/pi-wakatime.log"
 ```
 
 If no activity appears in WakaTime:
 
-1. verify `~/.wakatime.cfg` contains a valid `api_key`
-2. inspect `~/.wakatime/pi-wakatime.log`
-3. check whether `~/.wakatime/wakatime-cli` exists
+1. verify `~/.wakatime.cfg` contains a valid `api_key` (or `$WAKATIME_HOME/.wakatime.cfg` when `WAKATIME_HOME` is set)
+2. inspect `~/.wakatime/pi-wakatime.log` (or `$WAKATIME_HOME/.wakatime/pi-wakatime.log`)
+3. check whether `~/.wakatime/wakatime-cli` exists (or `$WAKATIME_HOME/.wakatime/wakatime-cli`)
 4. confirm Pi is actually loading the extension
 
 If `wakatime-cli` download fails:
 
 - verify network access to GitHub releases
-- verify proxy settings in `~/.wakatime.cfg`
+- verify proxy settings in `~/.wakatime.cfg` (or `$WAKATIME_HOME/.wakatime.cfg`)
 - install `wakatime-cli` globally as a fallback
 
 ## Credits
